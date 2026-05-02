@@ -1,0 +1,146 @@
+name: NoteApp CI Pipeline (GitOps with ArgoCD)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+env:
+  IMAGE_NAME: krishna0405/noteapp
+
+jobs:
+
+  # ==============================
+  # 1. BUILD + TEST + QUALITY
+  # ==============================
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Image Tag
+        run: echo "IMAGE_TAG=v${{ github.run_number }}" >> $GITHUB_ENV
+
+      # Setup .NET
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # Cache NuGet
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+
+      - name: Restore Dependencies
+        run: dotnet restore
+
+      - name: Build (Compile)
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Run Unit Tests
+        run: dotnet test --no-build --verbosity normal
+
+      # SonarQube Scan
+      - name: Install SonarScanner
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: SonarQube Begin
+        run: |
+          dotnet sonarscanner begin \
+          /k:"noteapp" \
+          /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
+          /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
+
+      - name: Build for Sonar
+        run: dotnet build
+
+      - name: SonarQube End
+        run: dotnet sonarscanner end \ /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
+
+      - name: Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ==============================
+  # 2. SECURITY SCANS
+  # ==============================
+  security:
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gitleaks
+      - name: Gitleaks Scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --source . --report-format json --report-path gitleaks.json
+            --exit-code 1
+
+      # Trivy
+      - name: Install Trivy
+        run: |
+          wget -qO- https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Trivy Filesystem Scan
+        run: |
+          trivy fs . --severity HIGH,CRITICAL --exit-code 1
+
+  # ==============================
+  # 3. DOCKER BUILD & PUSH
+  # ==============================
+  docker:
+    runs-on: ubuntu-latest
+    needs: security
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set Image Tag
+        run: echo "IMAGE_TAG=v${{ github.run_number }}" >> $GITHUB_ENV
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Image
+        run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Scan Docker Image
+        run: |
+          trivy image --severity HIGH,CRITICAL --exit-code 1 $IMAGE_NAME:$IMAGE_TAG
+
+      - name: Push Image
+        run: docker push $IMAGE_NAME:$IMAGE_TAG
+
+  # ==============================
+  # 4. UPDATE MANIFEST (GITOPS)
+  # ==============================
+  update-manifest:
+    runs-on: ubuntu-latest
+    needs: docker
+
+    steps:
+      - name: Clone Manifest Repo
+        run: |
+          git clone https://${{ secrets.GIT_USERNAME }}:${{ secrets.GIT_PASSWORD }}@github.com/sks0405/Capstone-DotNET-Mongo-CD.git
+          cd Capstone-DotNET-Mongo-CD
+
+          sed -i "s|krishna0405/noteapp:.*|krishna0405/noteapp:v${{ github.run_number }}|" Manifest/manifest.yaml
+
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add Manifest/manifest.yaml
+          git commit -m "Update image tag to v${{ github.run_number }}" || echo "No changes"
+          git push origin main

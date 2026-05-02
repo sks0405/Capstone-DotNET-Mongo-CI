@@ -10,9 +10,9 @@ env:
 
 jobs:
 
-  # ==============================
-  # 1. BUILD + TEST + QUALITY
-  # ==============================
+# ==============================
+# 1. BUILD + TEST + CODE QUALITY
+# ==============================
   build-test:
     runs-on: ubuntu-latest
 
@@ -29,7 +29,7 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      # Cache NuGet
+      # Cache NuGet packages
       - name: Cache NuGet
         uses: actions/cache@v4
         with:
@@ -39,38 +39,40 @@ jobs:
       - name: Restore Dependencies
         run: dotnet restore
 
-      - name: Build (Compile)
-        run: dotnet build --no-restore --configuration Release
-
-      - name: Run Unit Tests
-        run: dotnet test --no-build --verbosity normal
-
-      # SonarQube Scan
+      # SonarQube Begin (must be before build)
       - name: Install SonarScanner
         run: dotnet tool install --global dotnet-sonarscanner
 
       - name: SonarQube Begin
         run: |
           dotnet sonarscanner begin \
-          /k:"noteapp" \
-          /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
-          /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
+            /k:"noteapp" \
+            /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
+            /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      - name: Build for Sonar
-        run: dotnet build
+      # Build + Test (inside Sonar scope)
+      - name: Build (Compile)
+        run: dotnet build --no-restore --configuration Release
 
+      - name: Run Unit Tests
+        run: dotnet test --no-build --verbosity normal
+
+      # SonarQube End (FIXED)
       - name: SonarQube End
-        run: dotnet sonarscanner end \ /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
+        run: |
+          dotnet sonarscanner end \
+            /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
 
+      # Quality Gate
       - name: Quality Gate Check
         uses: sonarsource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # ==============================
-  # 2. SECURITY SCANS
-  # ==============================
+# ==============================
+# 2. SECURITY SCANS
+# ==============================
   security:
     runs-on: ubuntu-latest
     needs: build-test
@@ -82,8 +84,7 @@ jobs:
       - name: Gitleaks Scan
         uses: gitleaks/gitleaks-action@v2
         with:
-          args: detect --source . --report-format json --report-path gitleaks.json
-            --exit-code 1
+          args: detect --source . --report-format json --report-path gitleaks.json --exit-code 1
 
       # Trivy
       - name: Install Trivy
@@ -92,11 +93,14 @@ jobs:
 
       - name: Trivy Filesystem Scan
         run: |
-          trivy fs . --severity HIGH,CRITICAL --exit-code 1
+          trivy fs . \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress
 
-  # ==============================
-  # 3. DOCKER BUILD & PUSH
-  # ==============================
+# ==============================
+# 3. DOCKER BUILD & PUSH
+# ==============================
   docker:
     runs-on: ubuntu-latest
     needs: security
@@ -118,14 +122,18 @@ jobs:
 
       - name: Scan Docker Image
         run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 1 $IMAGE_NAME:$IMAGE_TAG
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            $IMAGE_NAME:$IMAGE_TAG
 
       - name: Push Image
         run: docker push $IMAGE_NAME:$IMAGE_TAG
 
-  # ==============================
-  # 4. UPDATE MANIFEST (GITOPS)
-  # ==============================
+# ==============================
+# 4. UPDATE MANIFEST (GITOPS)
+# ==============================
   update-manifest:
     runs-on: ubuntu-latest
     needs: docker

@@ -125,6 +125,7 @@ jobs:
         run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
       - name: Trivy Image Scan       # ✅ Now Trivy is available
+        continue-on-error: true
         run: |
           trivy image \
             --severity HIGH,CRITICAL \

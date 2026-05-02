@@ -146,7 +146,7 @@ jobs:
     steps:
       - name: Clone Manifest Repo
         run: |
-          git clone https://${{ secrets.GIT_USERNAME }}:${{ secrets.GIT_PASSWORD }}@github.com/sks0405/Capstone-DotNET-Mongo-CD.git
+          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/sks0405/Capstone-DotNET-Mongo-CD.git
           cd Capstone-DotNET-Mongo-CD
 
           sed -i "s|krishna0405/noteapp:.*|krishna0405/noteapp:v${{ github.run_number }}|" Manifest/manifest.yaml
